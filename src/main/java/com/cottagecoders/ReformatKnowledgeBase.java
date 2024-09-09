@@ -25,6 +25,21 @@ import java.util.List;
 
 public class ReformatKnowledgeBase {
 
+  private static final String systemPrompt = """
+          You will refactor HTML-based KB articles from an old format to a new format. 
+          Produce standard html, do not use markdown. 
+          Start with H2 headings for the sections. 
+          The section headings to not need ID attributes. 
+          Do not produce a title. 
+          Ensure that numbered and bulleted lists from the original content are preserved.
+          Ensure the embedded examples and content in preformatted and code tags is preserved and included with the original text when creating the new article. 
+          Ensure that the <pre> </pre> and <code> </code> tags are kept in the new article. 
+          Ensure that embedded images are kept in the new article.
+          Produce only the new html content, no preface, comment, or introduction in the response. 
+          If nothing is found for a section, include the section header, and add a statement "Add additional content.". 
+          Produce only the section headings previously listed, in the order specified. 
+          Using the previous information, convert the HTML-based content to the new format. 
+          """;
   private static final String preface = """
           Create a knowledge base article using these section headings - 
           """;
@@ -36,15 +51,10 @@ public class ReformatKnowledgeBase {
           Tips & Tricks, Best Practices, Recommendations, FAQ, and Additional Resources. 
           """;
   private static final String common = """
-          Produce standard html, do not use markdown. 
-          Start with H2 headings for the sections. 
-          The section headings to not need ID attributes. 
-          Do not produce a title. 
           Ensure that numbered and bulleted lists from the original content are preserved.
+          Ensure the embedded examples and content in code tags are preserved.
           Produce only the new html content, no preface, comment, or introduction in the response. 
           If nothing is found for a section, include the section header, and a comment to "Add additional content". 
-          Produce only the section headings previously listed, in the order specified. 
-          Using the previous information, convert the following HTML-based content to the new format. 
           """;
   private static final String CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
   private static final String CLAUDE_API_KEY = System.getenv("CLAUDE_API_KEY");
@@ -90,7 +100,7 @@ public class ReformatKnowledgeBase {
       return jsonResponse.path("choices").get(0).path("message").path("content").asText();
 
     } else {
-      throw new RuntimeException("API request failed with status code: " + response.statusCode());
+      throw new RuntimeException("LocalAI API request failed with status code: " + response.statusCode());
     }
   }
 
@@ -99,20 +109,22 @@ public class ReformatKnowledgeBase {
     JSONObject requestBody = new JSONObject();
     requestBody.put("model", "claude-3-sonnet-20240229");
     requestBody.put("max_tokens", 4096);
+    requestBody.put("system", systemPrompt);
     requestBody.put("messages", new JSONObject[]{new JSONObject().put("role", "user").put("content", prompt)});
 
     HttpRequest request = HttpRequest.newBuilder().uri(URI.create(CLAUDE_API_URL)).header("Content-Type",
                                                                                           "application/json").header(
             "x-api-key",
-            CLAUDE_API_KEY).header("anthropic-version", "2023-06-01").POST(HttpRequest.BodyPublishers.ofString(
-            requestBody.toString())).build();
+            System.getenv("CLAUDE_API_KEY")).header("anthropic-version",
+                                                    "2023-06-01").POST(HttpRequest.BodyPublishers.ofString(requestBody.toString())).build();
 
     HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() != 200) {
-      System.out.println("API request failed with status code: " + response.statusCode());
+      System.out.println("Claude: API request failed with status code: " + response.statusCode());
       System.out.println("Response body: " + response.body());
       System.exit(3);
     }
+
     JSONObject jsonResponse = new JSONObject(response.body());
 
     JSONArray contentArray = jsonResponse.getJSONArray("content");
@@ -120,12 +132,11 @@ public class ReformatKnowledgeBase {
     if (!contentArray.isEmpty()) {
       JSONObject contentObject = contentArray.getJSONObject(0);
       text = contentObject.getString("text");
+
     } else {
       System.out.println("The content array is empty.");
-    }
 
-    // get past the Claude's rate limit...
-    Thread.sleep(15000);
+    }
 
     return text;
   }
@@ -134,33 +145,32 @@ public class ReformatKnowledgeBase {
 
     try (Zendesk zd = connectToZendesk()) {
 
+      int count = 0;
       List<KBArticle> kba = new ArrayList<>();
-      try (PrintWriter pw = new PrintWriter("output.html")) {
-        int count = 0;
-        List<Article> toDo = new ArrayList<>();
+      List<Article> toDo = new ArrayList<>();
 
-        for (Article a : zd.getArticles()) {
-          try {
-            if (a.getSectionId() != 0 && zd.getSection(a.getSectionId()) != null) {
-              if(!a.getTitle().startsWith("Draft: ")) {
-                toDo.add(a);
-              }
-            } else {
-              System.out.println("not a valid section. " + zd.getSection(a.getSectionId()));
-              continue;
+      for (Article a : zd.getArticles()) {
+        try {
+          if (a.getSectionId() != 0 && zd.getSection(a.getSectionId()) != null) {
+            if (!a.getTitle().startsWith("Draft: ")) {
+              toDo.add(a);
             }
-          } catch (Exception ex) {
-            System.out.println(ex.getMessage());
-            ex.printStackTrace();
-            System.exit(1);
+          } else {
+            System.out.println("not a valid section. " + zd.getSection(a.getSectionId()));
+            continue;
           }
+        } catch (Exception ex) {
+          System.out.println(ex.getMessage());
+          ex.printStackTrace();
+          System.exit(1);
         }
-        System.out.println(toDo.size() + " articles to process.");
+      }
+      System.out.println(toDo.size() + " articles to process.");
 
+      try (PrintWriter pw = new PrintWriter("output.html")) {
         // "toDo" is the list of all the articles to process.
-        // updating the iterable leads to duplicates.
         for (Article a : toDo) {
-          String response = "x";
+          String response = "";
           String assembledPrompt = "";
 
           // create the prompt
@@ -169,11 +179,19 @@ public class ReformatKnowledgeBase {
 
           } else if (zd.getSection(a.getSectionId()).getName().equals("Troubleshooting")) {
             assembledPrompt = preface + troubleShootingSectionNames + common + " " + a.getBody();
+
+          } else if (zd.getSection(a.getSectionId()).getName().equals("FAQ")) {
+            assembledPrompt = preface + howToSectionNames + common + " " + a.getBody();
           }
 
+          if(StringUtils.isEmpty(assembledPrompt)) {
+            System.out.println("unknown article type " +
+                                       zd.getSection(a.getSectionId()).getName() + " " + a.getTitle());
+            continue;
+          }
           try {
 
-            boolean LOCAL = true;
+            boolean LOCAL = false;
             if (LOCAL) {
               response = sendLocalPrompt(assembledPrompt);
             } else {
@@ -186,16 +204,17 @@ public class ReformatKnowledgeBase {
 
             pw.println(response);
 
-            // because the LLM can't follow instructions:
+            // because the LocalAI LLM can't follow instructions:
             response = response.replace(
                     "Here is the converted HTML content to the specified Knowledge Base article format",
                     "");
             response = response.replace("Here is the rewritten HTML content using the specified section headings:", "");
             response = response.replace("Here is the rewritten content in the format you requested:", "");
 
-
           } catch (Exception e) {
+            System.out.println("LLM Exception: " + e.getMessage());
             e.printStackTrace();
+            System.exit(1);
           }
 
           Article replacement = new Article();
@@ -213,7 +232,6 @@ public class ReformatKnowledgeBase {
           zd.createArticle(replacement);
 
           String draftUrl = "";
-
           Iterable<Article> ans = zd.getArticles();
           for (Article poss : ans) {
             if (poss.getTitle().equals(replacement.getTitle())) {
@@ -227,9 +245,16 @@ public class ReformatKnowledgeBase {
         }
 
         writeCsvFile("./output.csv", kba);
+
+      } catch (IOException ex) {
+        System.out.println("Exception initializing PrintWriter: " + ex.getMessage());
+        ex.printStackTrace();
+        System.exit(1);
+
       }
+
     } catch (Exception ex) {
-      System.out.println("exception: " + ex.getMessage());
+      System.out.println("Exception connecting to Zendesk: " + ex.getMessage());
       ex.printStackTrace();
       System.exit(5);
     }
@@ -255,7 +280,6 @@ public class ReformatKnowledgeBase {
 
   private Zendesk connectToZendesk() {
     return new Zendesk.Builder(System.getenv("ZENDESK_URL")).setUsername(System.getenv("ZENDESK_EMAIL")).setToken(System.getenv(
-                    "ZENDESK_TOKEN")) // or .setPassword("...")
-                   .build();
+            "ZENDESK_TOKEN")).build();
   }
 }
