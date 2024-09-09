@@ -54,7 +54,7 @@ public class ReformatKnowledgeBase {
           Ensure that numbered and bulleted lists from the original content are preserved.
           Ensure the embedded examples and content in code tags are preserved.
           Produce only the new html content, no preface, comment, or introduction in the response. 
-          If nothing is found for a section, include the section header, text saying to "Add additional content". 
+          If nothing is found for a section, include the section header, and add a statement "Add additional content". 
           """;
   private static final String CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
   private static final String CLAUDE_API_KEY = System.getenv("CLAUDE_API_KEY");
